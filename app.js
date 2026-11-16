@@ -205,7 +205,7 @@
   // ---------- routing ----------
   const views = { my: renderMy, master: renderMaster, people: renderPeople, person: renderPerson, position: renderPosition, meetings: renderMeetings, minutes: renderMinutes };
   const ui = {
-    master: { q: '', officer: '', status: 'open', urgency: '', sort: 'urgency', dir: 1, view: 'list' },
+    master: { q: '', officer: '', status: 'open', urgency: '', sort: 'urgency', dir: 1, view: 'list', calMonth: null, calDay: null },
     people: { q: '', sort: 'name' },
     meetingId: null, minutesId: null, myShowDone: false, personShowDone: false,
     rsvpDraft: null, liveRefresh: null, lastHash: null,
@@ -356,6 +356,130 @@
         e.preventDefault(); col.classList.remove('over');
         const t = task(dragId); dragId = null;
         if (t && setStatus(t, col.dataset.col)) { persist(); after(); toast(`“${t.title}” → ${t.status}`); }
+      });
+    });
+  }
+
+  // ---------- calendar (admins, Master List) ----------
+  // Month grid of task due dates + meetings. Drag a task to another day to change its due date.
+  // On phones the grid turns into a day-by-day agenda.
+  const MAX_CHIPS = 3;
+  function calendarView(list) {
+    const f = ui.master;
+    const month = f.calMonth || todayISO().slice(0, 7);
+    const [y, m] = month.split('-').map(Number);
+    const first1 = new Date(y, m - 1, 1);
+    const daysIn = new Date(y, m, 0).getDate();
+    const rows = Math.ceil((first1.getDay() + daysIn) / 7);
+    const start = new Date(y, m - 1, 1 - first1.getDay());
+    const today = todayISO();
+    const tasksOn = {}, mtgsOn = {};
+    list.forEach(t => { if (t.dueDate) (tasksOn[t.dueDate] ||= []).push(t); });
+    D.meetings.forEach(mt => (mtgsOn[mt.date] ||= []).push(mt));
+    Object.values(tasksOn).forEach(a => a.sort((p, q) => (p.status === 'Done') - (q.status === 'Done') || URGENCY_ORDER[urgency(p).key] - URGENCY_ORDER[urgency(q).key]));
+    const noDate = list.filter(t => !t.dueDate).length;
+    const sel = f.calDay && f.calDay.startsWith(month) ? f.calDay : (today.startsWith(month) ? today : null);
+
+    const taskChip = t => `<div class="cal-chip u-${urgency(t).key} ${t.status === 'Done' ? 'done' : ''}" data-task="${t.id}" draggable="${canEdit(t)}" title="${esc(t.title)} · ${esc(ownerName(t.ownerId))}">${isPos(t.ownerId) ? avatarStack(assignees(t), 2) : avatar(t.ownerId, 'xs')}<span>${esc(t.title)}</span></div>`;
+    const mtgChip = mt => `<div class="cal-chip mtg" data-mtg="${mt.id}" title="${esc(mt.title)}"><span>${mt.time ? fmtTime(mt.time).replace(':00', '').replace(' ', '').toLowerCase() + ' ' : ''}${esc(mt.title)}</span></div>`;
+
+    const days = [];
+    for (let i = 0; i < rows * 7; i++) { const d = new Date(start); d.setDate(start.getDate() + i); days.push(localISO(d)); }
+
+    const cell = iso => {
+      const ts = tasksOn[iso] || [], ms = mtgsOn[iso] || [];
+      const chips = [...ms.map(mtgChip), ...ts.map(taskChip)];
+      const shown = chips.slice(0, MAX_CHIPS);
+      return `<div class="cal-cell ${iso.startsWith(month) ? '' : 'out'} ${iso === today ? 'today' : ''} ${iso === sel ? 'sel' : ''}" data-date="${iso}">
+        <div class="cal-head"><button class="cal-num" data-day="${iso}" title="${fmtDay(iso)}">${parseISO(iso).getDate()}</button>
+          <button class="cal-add ghost" data-add-day="${iso}" title="Add a task due ${fmtShort(iso)}" aria-label="Add task">+</button></div>
+        ${shown.join('')}
+        ${chips.length > shown.length ? `<button class="cal-more" data-day="${iso}">+${chips.length - shown.length} more</button>` : ''}
+      </div>`;
+    };
+
+    // phone agenda: only this month's days that have something
+    const agendaDays = days.filter(iso => iso.startsWith(month) && ((tasksOn[iso] || []).length || (mtgsOn[iso] || []).length));
+    const agenda = agendaDays.length ? agendaDays.map(iso => {
+      const d = parseISO(iso);
+      return `<div class="ag-day ${iso === today ? 'today' : ''} ${iso < today ? 'past' : ''}">
+        <div class="ag-date"><span>${d.toLocaleDateString(undefined, { weekday: 'short' })}</span><b>${d.getDate()}</b></div>
+        <div class="ag-items">${[...(mtgsOn[iso] || []).map(mtgChip), ...(tasksOn[iso] || []).map(taskChip)].join('')}</div>
+      </div>`;
+    }).join('') : '<div class="empty">Nothing due this month.</div>';
+
+    // selected day detail
+    const selTasks = sel ? (tasksOn[sel] || []) : [];
+    const selMtgs = sel ? (mtgsOn[sel] || []) : [];
+    const detail = sel ? `
+      <div class="cal-detail">
+        <div class="cal-detail-head">
+          <h3>${parseISO(sel).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</h3>
+          <button class="sm" data-add-day="${sel}">+ Task due this day</button>
+        </div>
+        ${selMtgs.map(mt => `<div class="cal-detail-mtg" data-mtg="${mt.id}">🗓 <b>${esc(mt.title)}</b><span class="muted small">${mt.time ? fmtTime(mt.time) : ''}${mt.location ? ' · ' + esc(mt.location) : ''} · ${Object.values(mt.rsvps || {}).filter(r => r.status === 'yes').length} going</span><span class="muted">›</span></div>`).join('')}
+        ${selTasks.length ? taskTable(selTasks, { showOwner: true }) : (selMtgs.length ? '' : '<div class="muted small" style="padding:4px 2px 2px">Nothing due. Drag a task here or add one.</div>')}
+      </div>` : '';
+
+    return `
+      <div class="cal-wrap">
+        <div class="cal-nav">
+          <h3>${first1.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</h3>
+          ${noDate ? `<span class="muted small">${plural(noDate, 'task')} with no due date</span>` : ''}
+          <button class="sm" data-cal="0">Today</button>
+          <button class="sm icon-nav" data-cal="-1" aria-label="Previous month">‹</button>
+          <button class="sm icon-nav" data-cal="1" aria-label="Next month">›</button>
+        </div>
+        <div class="cal-grid">
+          ${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => `<div class="cal-dow">${d}</div>`).join('')}
+          ${days.map(cell).join('')}
+        </div>
+        <div class="cal-agenda">${agenda}</div>
+        ${detail}
+        <div class="cal-legend small muted">
+          <span><i class="lg u-overdue"></i>Overdue</span><span><i class="lg u-today"></i>Today</span><span><i class="lg u-urgent"></i>Soon</span>
+          <span><i class="lg u-week"></i>This week</span><span><i class="lg u-later"></i>Later</span><span><i class="lg u-done"></i>Done</span><span><i class="lg mtg"></i>Meeting</span>
+          <span class="cal-hint">Drag a task to another day to change its due date</span>
+        </div>
+      </div>`;
+  }
+
+  function wireCalendar(root) {
+    const f = ui.master;
+    $$('[data-cal]', root).forEach(b => b.onclick = () => {
+      const step = +b.dataset.cal;
+      if (!step) { f.calMonth = todayISO().slice(0, 7); f.calDay = todayISO(); }
+      else {
+        const [y, m] = (f.calMonth || todayISO().slice(0, 7)).split('-').map(Number);
+        const d = new Date(y, m - 1 + step, 1);
+        f.calMonth = localISO(d).slice(0, 7); f.calDay = null;
+      }
+      renderMaster();
+    });
+    $$('[data-day]', root).forEach(b => b.onclick = e => { e.stopPropagation(); f.calDay = b.dataset.day; f.calMonth = b.dataset.day.slice(0, 7); renderMaster(); });
+    $$('[data-add-day]', root).forEach(b => b.onclick = e => { e.stopPropagation(); openTaskModal(null, renderMaster, { dueDate: b.dataset.addDay }); });
+    $$('[data-mtg]', root).forEach(c => c.onclick = e => { e.stopPropagation(); ui.meetingId = c.dataset.mtg; location.hash = '#meetings'; });
+    $$('.cal-cell', root).forEach(c => c.addEventListener('click', e => {
+      if (e.target.closest('[data-task], [data-mtg], button')) return;
+      f.calDay = c.dataset.date; f.calMonth = c.dataset.date.slice(0, 7); renderMaster();
+    }));
+
+    // drag a task chip onto another day to move its due date
+    let dragId = null;
+    $$('.cal-chip[draggable="true"]', root).forEach(c => {
+      c.addEventListener('dragstart', e => { dragId = c.dataset.task; c.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId); });
+      c.addEventListener('dragend', () => c.classList.remove('dragging'));
+    });
+    $$('.cal-cell', root).forEach(cell => {
+      cell.addEventListener('dragover', e => { if (!dragId) return; e.preventDefault(); cell.classList.add('over'); });
+      cell.addEventListener('dragleave', e => { if (!cell.contains(e.relatedTarget)) cell.classList.remove('over'); });
+      cell.addEventListener('drop', e => {
+        e.preventDefault(); cell.classList.remove('over');
+        const t = task(dragId); dragId = null;
+        if (!t || t.dueDate === cell.dataset.date) return;
+        t.dueDate = cell.dataset.date; t.updatedAt = nowISO();
+        f.calDay = cell.dataset.date;
+        persist(); renderMaster(); toast(`“${t.title}” now due ${fmtDay(t.dueDate)}`);
       });
     });
   }
@@ -549,7 +673,7 @@
       <div class="panel">
         <div class="panel-head">
           <h2>All tasks</h2>
-          <div class="seg" id="viewSeg">${[['list', 'List'], ['person', 'By person'], ['board', 'Board']].map(([k, l]) => `<button class="${f.view === k ? 'on' : ''}" data-v="${k}">${l}</button>`).join('')}</div>
+          <div class="seg" id="viewSeg">${[['list', 'List'], ['person', 'By person'], ['board', 'Board'], ['calendar', 'Calendar']].map(([k, l]) => `<button class="${f.view === k ? 'on' : ''}" data-v="${k}">${l}</button>`).join('')}</div>
         </div>
         <div class="panel-body" style="padding-bottom:4px">
           <div class="toolbar">
@@ -572,7 +696,7 @@
             <span class="muted small" style="margin-left:auto">${f.view === 'board' ? plural(base.length, 'task') : `${list.length} shown`}</span>
           </div>
         </div>
-        ${f.view === 'board' ? boardView(base) : taskTable(list, { showOwner: true, sortable: true, sort: f.sort, dir: f.dir, groupBy: f.view === 'person' ? 'owner' : null, empty: 'No tasks match these filters.' })}
+        ${f.view === 'board' ? boardView(base) : f.view === 'calendar' ? calendarView(list) : taskTable(list, { showOwner: true, sortable: true, sort: f.sort, dir: f.dir, groupBy: f.view === 'person' ? 'owner' : null, empty: 'No tasks match these filters.' })}
       </div>`;
 
     const v = $('#view');
@@ -597,6 +721,7 @@
     wireSort(v, f, renderMaster);
     wireTasks(v, renderMaster);
     if (f.view === 'board') wireBoard(v, renderMaster);
+    if (f.view === 'calendar') wireCalendar(v);
   }
 
   function exportCSV(list) {
