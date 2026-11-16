@@ -21,7 +21,7 @@ const Store = (() => {
 
   // Newer features that need schema.sql v2. If the database hasn't been upgraded yet,
   // the app keeps working and just hides these.
-  const features = { comments: true, completedAt: true };
+  const features = { comments: true, completedAt: true, adminPw: true };
 
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36));
 
@@ -149,12 +149,14 @@ const Store = (() => {
   };
 
   async function detectFeatures() {
-    const [c, t] = await Promise.all([
+    const [c, t, p] = await Promise.all([
       client.from('task_comments').select('id').limit(1),
       client.from('tasks').select('completed_at').limit(1),
+      client.rpc('admin_has_password', { oid: '__probe__' }),
     ]);
     features.comments = !c.error;
     features.completedAt = !t.error;
+    features.adminPw = !p.error;
     if (c.error || t.error) console.warn('Database is on the older schema — re-run supabase/schema.sql to enable task updates and on-time stats.');
   }
 
@@ -240,12 +242,50 @@ const Store = (() => {
     });
   }
 
+  // Who is using this device. Never guessed: if nobody has picked their name yet (or that
+  // officer was removed), it's null and the app asks "Who's this?".
   function fixMe() {
     let saved = null;
     try { saved = localStorage.getItem(ME_KEY); } catch {}
-    if (data.officers.some(o => o.id === saved)) data.currentUserId = saved;
-    else if (!data.officers.some(o => o.id === data.currentUserId)) data.currentUserId = (data.officers.find(o => o.isAdmin) || data.officers[0])?.id || null;
+    data.currentUserId = data.officers.some(o => o.id === saved) ? saved : null;
   }
+  function setMe(id) {
+    data.currentUserId = id;
+    try { id ? localStorage.setItem(ME_KEY, id) : localStorage.removeItem(ME_KEY); } catch {}
+  }
+
+  // ---------------- admin passwords ----------------
+  // Supabase: checked by database functions; the hashes are never readable from the site.
+  // Local mode: SHA-256 hashes in this browser (for trying things out only).
+  const LOCAL_PW = 'officerhub.adminpw';
+  async function sha(s) {
+    const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+    return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+  }
+  const localPw = () => { try { return JSON.parse(localStorage.getItem(LOCAL_PW)) || {}; } catch { return {}; } };
+  const saveLocalPw = m => localStorage.setItem(LOCAL_PW, JSON.stringify(m));
+  async function rpc(fn, args) {
+    const { data: out, error } = await client.rpc(fn, args);
+    if (error) throw new Error(error.message);
+    return out;
+  }
+  const adminPw = {
+    async has(oid) { return remote ? rpc('admin_has_password', { oid }) : !!localPw()[oid]; },
+    async verify(oid, pw) { return remote ? rpc('verify_admin_password', { oid, pw }) : localPw()[oid] === await sha(oid + pw); },
+    async set(oid, newPw, currentPw = null) {
+      if (remote) return rpc('set_admin_password', { oid, new_pw: newPw, current_pw: currentPw });
+      if (newPw.length < 6) throw new Error('Password must be at least 6 characters');
+      const m = localPw();
+      if (m[oid] && m[oid] !== await sha(oid + (currentPw || ''))) return false;
+      m[oid] = await sha(oid + newPw); saveLocalPw(m); return true;
+    },
+    async reset(target, newPw, byId, byPw) {
+      if (remote) return rpc('reset_admin_password', { target, new_pw: newPw, by_id: byId, by_pw: byPw });
+      if (newPw.length < 6) throw new Error('Password must be at least 6 characters');
+      if (!(await adminPw.verify(byId, byPw))) return false;
+      const m = localPw(); m[target] = await sha(target + newPw); saveLocalPw(m); return true;
+    },
+  };
 
   // ---------------- public API ----------------
   async function load() {
@@ -256,6 +296,7 @@ const Store = (() => {
         data = raw ? JSON.parse(raw) : seed();
       } catch (e) { console.error(e); data = seed(); }
       data.comments ||= [];
+      fixMe();
       save();
       return data;
     }
@@ -276,7 +317,6 @@ const Store = (() => {
   }
 
   function save() {
-    if (data.currentUserId) { try { localStorage.setItem(ME_KEY, data.currentUserId); } catch {} }
     if (remote) { pushChanges(); return true; }
     try {
       localStorage.setItem(LOCAL_KEY, JSON.stringify(data));
@@ -293,9 +333,9 @@ const Store = (() => {
       fixMe();
       return save();
     }
-    data = { comments: [], ...next }; return save();
+    data = { comments: [], ...next }; fixMe(); return save();
   }
-  function reset() { if (remote) return data; data = seed(); save(); return data; }
+  function reset() { if (remote) return data; data = seed(); fixMe(); save(); return data; }
   function clearAll() {
     const me = data.officers.find(o => o.id === data.currentUserId) || starter().officers[0];
     if (remote) { replaceAll({ officers: [me], tasks: [], comments: [], meetings: [] }); return data; }
@@ -320,7 +360,7 @@ const Store = (() => {
   }
 
   return {
-    load, save, replaceAll, reset, clearAll, uid, uploadFile, removeFile,
+    load, save, replaceAll, reset, clearAll, uid, uploadFile, removeFile, setMe, adminPw,
     remote, configured, features,
     onRemoteChange: fn => listeners.change.push(fn),
     onError: fn => listeners.error.push(fn),

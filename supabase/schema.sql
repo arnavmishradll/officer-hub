@@ -60,6 +60,60 @@ create table if not exists task_comments (
   created_at  timestamptz default now()
 );
 
+-- v3: admin passwords. Hashes live in a table the website can't read at all;
+-- the site can only ask these functions "is this password right?".
+create extension if not exists pgcrypto with schema extensions;
+
+create table if not exists admin_passwords (
+  officer_id  text primary key references officers(id) on delete cascade,
+  pw_hash     text not null,
+  updated_at  timestamptz default now()
+);
+alter table admin_passwords enable row level security;   -- no policies = no direct access
+revoke all on admin_passwords from anon, authenticated;
+
+create or replace function admin_has_password(oid text) returns boolean
+language sql security definer set search_path = public, extensions as $$
+  select exists (select 1 from admin_passwords where officer_id = oid);
+$$;
+
+create or replace function verify_admin_password(oid text, pw text) returns boolean
+language sql security definer set search_path = public, extensions as $$
+  select exists (select 1 from admin_passwords where officer_id = oid and pw_hash = crypt(coalesce(pw, ''), pw_hash));
+$$;
+
+-- First time: anyone signing in as an admin with no password yet creates it.
+-- After that: changing it requires the current password.
+create or replace function set_admin_password(oid text, new_pw text, current_pw text default null) returns boolean
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  if length(coalesce(new_pw, '')) < 6 then raise exception 'Password must be at least 6 characters'; end if;
+  if not exists (select 1 from officers where id = oid and is_admin) then raise exception 'Only admins have passwords'; end if;
+  if exists (select 1 from admin_passwords where officer_id = oid) and not verify_admin_password(oid, current_pw) then
+    return false;
+  end if;
+  insert into admin_passwords (officer_id, pw_hash) values (oid, crypt(new_pw, gen_salt('bf')))
+  on conflict (officer_id) do update set pw_hash = excluded.pw_hash, updated_at = now();
+  return true;
+end $$;
+
+-- An admin can reset another admin's forgotten password by proving their own.
+create or replace function reset_admin_password(target text, new_pw text, by_id text, by_pw text) returns boolean
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  if length(coalesce(new_pw, '')) < 6 then raise exception 'Password must be at least 6 characters'; end if;
+  if not exists (select 1 from officers where id = by_id and is_admin) or not verify_admin_password(by_id, by_pw) then
+    return false;
+  end if;
+  if not exists (select 1 from officers where id = target and is_admin) then raise exception 'Only admins have passwords'; end if;
+  insert into admin_passwords (officer_id, pw_hash) values (target, crypt(new_pw, gen_salt('bf')))
+  on conflict (officer_id) do update set pw_hash = excluded.pw_hash, updated_at = now();
+  return true;
+end $$;
+
+grant execute on function admin_has_password(text), verify_admin_password(text, text),
+  set_admin_password(text, text, text), reset_admin_password(text, text, text, text) to anon, authenticated;
+
 -- ---------------------------------------------------------------------------
 -- Access rules.
 -- There is no login yet, so anyone with the site URL can read and edit.

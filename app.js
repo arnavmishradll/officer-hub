@@ -12,7 +12,7 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const me = () => D.officers.find(o => o.id === D.currentUserId) || D.officers[0];
+  const me = () => D.officers.find(o => o.id === D.currentUserId); // null until they pick their name
   const isAdmin = () => !!me()?.isAdmin;
   const officer = id => D.officers.find(o => o.id === id);
   const oname = id => officer(id)?.name || 'Former officer';
@@ -219,7 +219,7 @@
     return [v, arg];
   }
   function route() {
-    if (!D) return;
+    if (!D || !me() || gated()) return;
     const [v, arg] = currentView();
     const tab = v === 'person' || v === 'position' ? 'people' : v;
     $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.view === tab));
@@ -230,11 +230,178 @@
   window.addEventListener('hashchange', route);
   const rerender = () => route();
 
-  function renderUserSelect() {
-    const sel = $('#userSelect');
-    sel.innerHTML = D.officers.map(o => `<option value="${o.id}" ${o.id === D.currentUserId ? 'selected' : ''}>${esc(o.name)}${o.isAdmin ? ' ★' : ''}</option>`).join('');
+  // ---------- who's using this device ----------
+  // Everyone picks their own name once per device ("Who's this?"); the device remembers it.
+  // Admin profiles also need their password (checked by the database), remembered for 30 days.
+  const ADMIN_OK_KEY = 'officerhub.adminOk';
+  const ADMIN_OK_DAYS = 30;
+  const gated = () => document.body.classList.contains('gated');
+  function adminVerified(id) {
+    try {
+      const v = JSON.parse(localStorage.getItem(ADMIN_OK_KEY) || 'null');
+      return v && v.id === id && Date.now() - v.at < ADMIN_OK_DAYS * 86400000;
+    } catch { return false; }
   }
-  $('#userSelect').addEventListener('change', e => { D.currentUserId = e.target.value; persist(); route(); toast(`Viewing as ${oname(e.target.value)}`); });
+  function markAdminVerified(id) { try { localStorage.setItem(ADMIN_OK_KEY, JSON.stringify({ id, at: Date.now() })); } catch {} }
+  function clearAdminVerified() { try { localStorage.removeItem(ADMIN_OK_KEY); } catch {} }
+
+  function startSession() {
+    const u = me();
+    if (!u) return showPicker();
+    if (u.isAdmin && Store.features.adminPw && !adminVerified(u.id)) return showPicker(u.id);
+    document.body.classList.remove('gated');
+    renderUserSelect();
+    route();
+  }
+
+  function gate(html) {
+    document.body.classList.add('gated');
+    $('#modalRoot').innerHTML = '';
+    $('#view').innerHTML = `<div class="gate" id="gate"><div class="gate-card">${html}</div></div>`;
+    window.scrollTo(0, 0);
+  }
+
+  function showPicker(confirmId = null) {
+    if (confirmId) return showConfirm(confirmId);
+    const people = [...D.officers].sort((a, b) => a.name.localeCompare(b.name));
+    gate(`
+      <div class="gate-logo"><span class="logo">◆</span></div>
+      <h1>Who's this?</h1>
+      <p class="muted">Tap your name. This device will remember you, so make sure it's really you.</p>
+      <input type="search" id="gateQ" placeholder="Search your name…" autocomplete="off" />
+      <div class="gate-list" id="gateList">${people.map(o => `
+        <button class="gate-person" data-pick="${o.id}" data-name="${esc((o.name + ' ' + (o.role || '')).toLowerCase())}">
+          ${avatar(o.id)}<span class="gate-who"><b>${esc(o.name)}</b><span class="muted small">${esc(o.role || 'Officer')}</span></span>
+          ${o.isAdmin && Store.features.adminPw ? '<span class="gate-lock" title="Password protected">🔒</span>' : ''}
+        </button>`).join('')}</div>`);
+    $('#gateQ').oninput = e => {
+      const q = e.target.value.toLowerCase().trim();
+      $$('#gateList .gate-person').forEach(b => (b.hidden = q && !b.dataset.name.includes(q)));
+    };
+    $$('[data-pick]').forEach(b => b.onclick = () => showConfirm(b.dataset.pick));
+  }
+
+  async function showConfirm(id) {
+    const o = officer(id);
+    if (!o) return showPicker();
+    const needsPw = o.isAdmin && Store.features.adminPw;
+    let hasPw = false;
+    if (needsPw) {
+      gate(`<div class="gate-me">${avatar(id, 'xl')}</div><p class="muted">Checking…</p>`);
+      try { hasPw = await Store.adminPw.has(id); }
+      catch (e) { gate(`<h1>Couldn't reach the database</h1><p class="muted">${esc(e.message)}</p><button class="primary" data-retry>Try again</button>`); $('[data-retry]').onclick = () => showConfirm(id); return; }
+    }
+    gate(`
+      <div class="gate-me">${avatar(id, 'xl')}</div>
+      <h1>${needsPw ? esc(o.name) : `Are you ${esc(first(id))}?`}</h1>
+      <p class="muted">${esc(o.name)} · ${esc(o.role || 'Officer')}${needsPw ? ' · Admin' : ''}</p>
+      ${!needsPw ? `
+        <div class="gate-actions">
+          <button class="primary big" id="yes">Yes, that's me</button>
+          <button class="ghost" id="back">‹ Not me</button>
+        </div>`
+      : `
+        <form id="pwForm" class="gate-form">
+          <p class="small">${hasPw ? 'Admin profiles are password protected.' : '<b>First time as an admin:</b> create a password so nobody else can use your profile.'}</p>
+          <input type="password" name="pw" placeholder="${hasPw ? 'Password' : 'New password (6+ characters)'}" autocomplete="${hasPw ? 'current-password' : 'new-password'}" required />
+          ${hasPw ? '' : '<input type="password" name="pw2" placeholder="Type it again" autocomplete="new-password" required />'}
+          <div class="gate-err" id="pwErr"></div>
+          <button class="primary big" type="submit">${hasPw ? 'Unlock' : 'Create password & continue'}</button>
+          ${hasPw ? '<p class="muted small">Forgot it? Another admin can reset it from your profile → Edit.</p>' : ''}
+        </form>
+        <div class="gate-actions"><button class="ghost" id="back">‹ Not me</button></div>`}`);
+    $('#back').onclick = () => { if (D.currentUserId === id) Store.setMe(null); showPicker(); };
+    $('#yes') && ($('#yes').onclick = () => signIn(id));
+    const f = $('#pwForm');
+    if (!f) return;
+    setTimeout(() => f.pw.focus(), 50);
+    f.onsubmit = async e => {
+      e.preventDefault();
+      const err = msg => { $('#pwErr').textContent = msg; f.pw.select(); };
+      const btn = f.querySelector('[type=submit]'); btn.disabled = true;
+      try {
+        if (hasPw) {
+          if (!(await Store.adminPw.verify(id, f.pw.value))) return err('That password isn\'t right.');
+        } else {
+          if (f.pw.value.length < 6) return err('Use at least 6 characters.');
+          if (f.pw.value !== f.pw2.value) return err('Those don\'t match.');
+          if (!(await Store.adminPw.set(id, f.pw.value))) return err('Someone already set a password for this profile. Enter that one instead.');
+          toast('Admin password created');
+        }
+        markAdminVerified(id);
+        signIn(id);
+      } catch (ex) { err(ex.message); }
+      finally { btn.disabled = false; }
+    };
+  }
+
+  function signIn(id) {
+    Store.setMe(id);
+    ui.lastHash = null;
+    if (!location.hash || location.hash === '#') location.hash = '#my';
+    startSession();
+    toast(`Welcome, ${first(id)} 👋`);
+  }
+
+  // Top-right account button (replaces the old "Signed in as" dropdown)
+  function renderUserSelect() {
+    const u = me();
+    $('#meBtn').innerHTML = u ? `${avatar(u.id, 'sm')}<span class="me-name">${esc(first(u.id))}</span>${u.isAdmin ? '<span class="star">★</span>' : ''}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>` : '';
+  }
+  $('#meBtn').addEventListener('click', () => { if (D && me() && !gated()) openAccount(); });
+
+  function openAccount() {
+    const u = me();
+    const pw = u.isAdmin && Store.features.adminPw;
+    const { root, close } = modal(`
+      <div class="modal-head"><h2>Account</h2><button class="ghost" data-close aria-label="Close">✕</button></div>
+      <div class="modal-body account">
+        <div class="account-me">${avatar(u.id, 'lg')}<div><b>${esc(u.name)}</b><div class="muted small">${esc(u.role || 'Officer')}${u.isAdmin ? ' · Admin' : ''}${pw ? ' · 🔒 password protected' : ''}</div></div></div>
+        <div class="account-actions">
+          <a class="btn" href="#person/${u.id}" data-close>View my profile</a>
+          ${pw ? '<button id="chPw">Change admin password</button>' : ''}
+          <button id="switchMe" class="danger">Switch profile</button>
+        </div>
+        <p class="muted small">This device remembers who you are. Only switch if someone else is using this phone or computer.</p>
+      </div>`);
+    $('#switchMe', root).onclick = () => {
+      if (!confirm(`Sign out of ${u.name} on this device?\nThe next person will pick their own name.`)) return;
+      close(); Store.setMe(null); clearAdminVerified(); startSession();
+    };
+    $('#chPw', root) && ($('#chPw', root).onclick = () => { close(); openPasswordModal(u.id); });
+  }
+
+  // Change your own admin password, or (forTarget) reset another admin's by proving yours.
+  function openPasswordModal(targetId) {
+    const self = targetId === me().id;
+    const t = officer(targetId);
+    const { root, close } = modal(`
+      <div class="modal-head"><h2>${self ? 'Change admin password' : `Reset ${esc(first(targetId))}'s password`}</h2><button class="ghost" data-close aria-label="Close">✕</button></div>
+      <form class="modal-body" id="pwModal">
+        ${self ? '' : `<p class="muted small" style="margin-top:0">Use this if ${esc(t.name)} forgot their password. They'll sign in with the new one.</p>`}
+        <label class="field"><span>${self ? 'Current password' : 'Your password'}</span><input type="password" name="cur" autocomplete="current-password" required /></label>
+        <label class="field"><span>New password${self ? '' : ` for ${esc(first(targetId))}`}</span><input type="password" name="pw" autocomplete="new-password" placeholder="6+ characters" required /></label>
+        <label class="field"><span>Type it again</span><input type="password" name="pw2" autocomplete="new-password" required /></label>
+        <div class="gate-err" id="pmErr"></div>
+      </form>
+      <div class="modal-foot"><button data-close>Cancel</button><button class="primary" id="pmSave">Save</button></div>`);
+    const f = $('#pwModal', root);
+    setTimeout(() => f.cur.focus(), 30);
+    const save = async () => {
+      const err = m => ($('#pmErr', root).textContent = m);
+      if (f.pw.value.length < 6) return err('Use at least 6 characters.');
+      if (f.pw.value !== f.pw2.value) return err('The new passwords don\'t match.');
+      try {
+        const ok = self ? await Store.adminPw.set(targetId, f.pw.value, f.cur.value)
+          : await Store.adminPw.reset(targetId, f.pw.value, me().id, f.cur.value);
+        if (!ok) return err(self ? 'Current password isn\'t right.' : 'Your password isn\'t right.');
+        if (self) markAdminVerified(targetId);
+        close(); toast(self ? 'Password changed' : `${first(targetId)}'s password was reset`);
+      } catch (ex) { err(ex.message); }
+    };
+    f.onsubmit = e => { e.preventDefault(); save(); };
+    $('#pmSave', root).onclick = save;
+  }
 
   // ---------- task table ----------
   function statusSelect(t) {
@@ -1530,6 +1697,7 @@
       </form>
       <div class="modal-foot">
         ${!isNew && off.id !== D.currentUserId ? '<button class="danger left" id="oDel">Remove</button>' : ''}
+        ${!isNew && off.isAdmin && off.id !== D.currentUserId && Store.features.adminPw ? '<button id="oResetPw">Reset password</button>' : ''}
         <button data-close>Cancel</button><button class="primary" id="oSave">${isNew ? 'Add' : 'Save'}</button>
       </div>`);
     const f = $('#oForm', root);
@@ -1539,11 +1707,14 @@
       if (!isNew && off.id === D.currentUserId && !vals.isAdmin && D.officers.filter(x => x.isAdmin).length === 1) {
         toast('You are the only admin — make someone else admin first'); return;
       }
+      const becameAdmin = !isNew && !off.isAdmin && vals.isAdmin;
       if (isNew) D.officers.push({ id: Store.uid(), ...vals }); else Object.assign(off, vals);
+      if ((becameAdmin || (isNew && vals.isAdmin)) && Store.features.adminPw) toast(`${vals.name.split(' ')[0]} will create an admin password next time they open the app`);
       persist(); close(); renderUserSelect(); route();
     };
     f.onsubmit = e => { e.preventDefault(); save(); };
     $('#oSave', root).onclick = save;
+    $('#oResetPw', root) && ($('#oResetPw', root).onclick = () => { close(); openPasswordModal(off.id); });
     $('#oDel', root) && ($('#oDel', root).onclick = () => {
       const owned = D.tasks.filter(t => t.ownerId === off.id).length;
       if (!confirm(`Remove ${off.name}?${owned ? ` Their ${owned} task(s) will be reassigned to you.` : ''}`)) return;
@@ -1565,7 +1736,7 @@
     openTaskModal(null, rerender, v === 'person' && arg ? { ownerId: arg } : v === 'position' && arg ? { ownerId: posId(decodeURIComponent(arg)) } : {});
   });
   document.addEventListener('keydown', e => {
-    if (!D || e.metaKey || e.ctrlKey || e.altKey || $('#modalRoot').children.length) return;
+    if (!D || gated() || e.metaKey || e.ctrlKey || e.altKey || $('#modalRoot').children.length) return;
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
     if (e.key === 'n') { e.preventDefault(); openTaskModal(null, rerender); }
     if (e.key === '/') { const q = $('#q, #pq'); if (q) { e.preventDefault(); q.focus(); } }
@@ -1609,9 +1780,10 @@
     return !!(a && a.closest('#view') && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && !['checkbox', 'file', 'button'].includes(a.type))));
   }
   function applyRemote() {
+    if (gated()) { if (!$('#gate [type=password]')) startSession(); return; } // keep the picker fresh, don't wipe a typed password
     if (busy()) { pendingRemote = true; ui.liveRefresh?.(); return; }
     pendingRemote = false;
-    renderUserSelect(); route();
+    startSession(); // you may have been removed, or just made an admin
   }
   function flushRemote() { if (pendingRemote) setTimeout(applyRemote, 0); }
   document.addEventListener('focusout', flushRemote);
@@ -1631,6 +1803,5 @@
     </div></div>`;
     return;
   }
-  renderUserSelect();
-  route();
+  startSession();
 })();
