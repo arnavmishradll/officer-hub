@@ -40,6 +40,7 @@
     chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>',
     copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12.5l4 4 8-9"/></svg>',
+    camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/></svg>',
   };
 
   // ---------- dates ----------
@@ -104,7 +105,8 @@
   function avatar(id, size = '') {
     const o = officer(id);
     if (!o) return `<span class="avatar ${size} ghost">?</span>`;
-    return `<span class="avatar ${size}" style="--h:${hueOf(o.id)}" title="${esc(o.name)}">${esc(initials(o.name))}</span>`;
+    const img = o.photo ? `<img src="${esc(o.photo)}" alt="" loading="lazy" onerror="this.remove()">` : '';
+    return `<span class="avatar ${size}${o.photo ? ' has-photo' : ''}" style="--h:${hueOf(o.id)}" title="${esc(o.name)}">${esc(initials(o.name))}${img}</span>`;
   }
   const personLink = id => `<a class="person" href="#person/${id}">${avatar(id, 'sm')}<span>${esc(oname(id))}</span></a>`;
   function avatarStack(ids, max = 4) {
@@ -359,6 +361,7 @@
         <div class="account-me">${avatar(u.id, 'lg')}<div><b>${esc(u.name)}</b><div class="muted small">${esc(u.role || 'Officer')}${u.isAdmin ? ' · Admin' : ''}${pw ? ' · 🔒 password protected' : ''}</div></div></div>
         <div class="account-actions">
           <a class="btn" href="#person/${u.id}" data-close>View my profile</a>
+          ${Store.features.photos ? `<button id="chPhoto">${u.photo ? 'Change profile photo' : 'Add a profile photo'}</button>` : ''}
           ${pw ? '<button id="chPw">Change admin password</button>' : ''}
           <button id="switchMe" class="danger">Switch profile</button>
         </div>
@@ -369,6 +372,81 @@
       close(); Store.setMe(null); clearAdminVerified(); startSession();
     };
     $('#chPw', root) && ($('#chPw', root).onclick = () => { close(); openPasswordModal(u.id); });
+    $('#chPhoto', root) && ($('#chPhoto', root).onclick = () => { close(); openPhotoModal(u.id); });
+  }
+
+  // ---------- profile photos ----------
+  // Center-crops to a square (a little higher than center on tall photos, where faces usually are)
+  // and shrinks to 320px JPEG so it loads instantly everywhere.
+  async function squarePhoto(file, size = 320) {
+    const src = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = () => rej(new Error("Couldn't open that image. Try a JPG or PNG."));
+        i.src = src;
+      });
+      const w = img.naturalWidth, h = img.naturalHeight, s = Math.min(w, h);
+      const sx = (w - s) / 2, sy = h > w ? (h - s) * 0.3 : (h - s) / 2;
+      const c = document.createElement('canvas');
+      c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, sx, sy, s, s, 0, 0, size, size);
+      return await new Promise(res => c.toBlob(res, 'image/jpeg', 0.86));
+    } finally { URL.revokeObjectURL(src); }
+  }
+
+  function openPhotoModal(id) {
+    const o = officer(id);
+    if (!o) return;
+    const self = id === me().id;
+    let pending = null; // cropped blob waiting to be saved
+    const { root, close } = modal(`
+      <div class="modal-head"><h2>${self ? 'Your photo' : `${esc(first(id))}'s photo`}</h2><button class="ghost" data-close aria-label="Close">✕</button></div>
+      <div class="modal-body photo-modal">
+        <div class="photo-preview" id="phPreview">${avatar(id, 'xl')}</div>
+        <p class="muted small" id="phHint">${o.photo ? 'Looking good. Pick a new one or remove it.' : 'Pick a photo. It gets cropped to a circle automatically.'}</p>
+        <input type="file" id="phFile" accept="image/*" hidden />
+        <div class="photo-actions">
+          <button class="primary" id="phPick">${o.photo ? 'Choose a different photo' : 'Choose photo'}</button>
+          ${o.photo ? '<button class="danger" id="phRemove">Remove photo</button>' : ''}
+        </div>
+      </div>
+      <div class="modal-foot"><button data-close>Cancel</button><button class="primary" id="phSave" disabled>Save</button></div>`);
+    const input = $('#phFile', root);
+    $('#phPick', root).onclick = () => input.click();
+    input.onchange = async () => {
+      const file = input.files[0];
+      if (!file) return;
+      if (!file.type.startsWith('image/')) { toast('That isn\'t an image'); return; }
+      try {
+        pending = await squarePhoto(file);
+        const url = URL.createObjectURL(pending);
+        $('#phPreview', root).innerHTML = `<span class="avatar xl has-photo"><img src="${url}" alt=""></span>`;
+        $('#phHint', root).textContent = 'Preview. Hit Save to use it.';
+        $('#phPick', root).textContent = 'Choose a different photo';
+        $('#phSave', root).disabled = false;
+      } catch (e) { toast(e.message); }
+    };
+    const apply = (photo, msg) => {
+      const old = o.photo;
+      o.photo = photo;
+      persist(); close(); renderUserSelect(); route(); toast(msg);
+      if (old && old !== photo) Store.removePhoto(old).catch(() => {});
+    };
+    $('#phSave', root).onclick = async () => {
+      if (!pending) return;
+      const btn = $('#phSave', root);
+      btn.disabled = true; btn.textContent = 'Uploading…';
+      try { apply(await Store.uploadPhoto(id, pending), self ? 'Photo updated 📸' : `Updated ${first(id)}'s photo`); }
+      catch (e) { btn.disabled = false; btn.textContent = 'Save'; toast('Upload failed: ' + e.message); }
+    };
+    $('#phRemove', root) && ($('#phRemove', root).onclick = () => {
+      if (!confirm('Remove this photo?')) return;
+      apply(null, 'Photo removed');
+    });
   }
 
   // Change your own admin password, or (forTarget) reset another admin's by proving yours.
@@ -1091,7 +1169,7 @@
       <a class="back" href="#people">‹ People</a>
       <div class="panel profile">
         <div class="profile-head">
-          ${avatar(id, 'xl')}
+          ${(self || admin) && Store.features.photos ? `<button class="avatar-edit" id="editPhoto" title="${o.photo ? 'Change' : 'Add'} photo" aria-label="Change photo">${avatar(id, 'xl')}<span class="cam">${ICON.camera}</span></button>` : avatar(id, 'xl')}
           <div class="profile-who">
             <h1>${esc(o.name)}</h1>
             <div class="muted">${coChairs(id).length ? roleLink(o) : esc(o.role || 'Officer')}${o.isAdmin ? ' · <span class="star">★</span> Admin' : ''}${self ? ' · <span class="chip">you</span>' : ''}</div>
@@ -1153,6 +1231,7 @@
       copyText(txt, `Reminder for ${first(id)} copied. Paste it in a text or GroupMe`);
     });
     $('#editOfficer') && ($('#editOfficer').onclick = () => openOfficerModal(o));
+    $('#editPhoto') && ($('#editPhoto').onclick = () => openPhotoModal(id));
     $('#toggleDone') && ($('#toggleDone').onclick = () => { ui.personShowDone = !ui.personShowDone; renderPerson(id); });
     wireTasks(v);
   }
