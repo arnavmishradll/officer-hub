@@ -1,5 +1,11 @@
 # Officer Hub
 
+**Live:** https://arnavmishradll.github.io/officer-hub/
+
+On iPhone: open the link in Safari → Share → **Add to Home Screen**. It opens full screen like an app.
+
+Updating the live site: commit and push to `main`. GitHub Pages rebuilds in about a minute.
+
 A lightweight, Quickbase-style tracker for managing officer tasks, meeting attendance, and minutes.
 Plain HTML/CSS/JS — no build step, so it runs on GitHub Pages as-is.
 
