@@ -15,7 +15,8 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#eef1f6" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)" />
-  <link rel="stylesheet" href="styles.css" />
+  <!-- ?v= makes browsers fetch the matching set of files after each update. Bump it when releasing (see README). -->
+  <link rel="stylesheet" href="styles.css?v=202611152335" />
   <script>
     // Apply the saved theme before first paint (no flash). Preference: system | light | dark.
     (function () {
@@ -50,8 +51,8 @@
   <div id="toast" class="toast" hidden></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js"></script>
-  <script src="config.js"></script>
-  <script src="store.js"></script>
-  <script src="app.js"></script>
+  <script src="config.js?v=202611152335"></script>
+  <script src="store.js?v=202611152335"></script>
+  <script src="app.js?v=202611152335"></script>
 </body>
 </html>

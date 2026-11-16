@@ -4,7 +4,8 @@
 
 On iPhone: open the link in Safari → Share → **Add to Home Screen**. It opens full screen like an app.
 
-Updating the live site: commit and push to `main`. GitHub Pages rebuilds in about a minute.
+Updating the live site: bump the `?v=` number on the script/style tags in `index.html` (so phones don't mix
+old and new files from cache), then commit and push to `main`. GitHub Pages rebuilds in about a minute.
 
 A lightweight, Quickbase-style tracker for managing officer tasks, meeting attendance, and minutes.
 Plain HTML/CSS/JS — no build step, so it runs on GitHub Pages as-is.
