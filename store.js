@@ -21,7 +21,7 @@ const Store = (() => {
 
   // Newer features that need schema.sql v2. If the database hasn't been upgraded yet,
   // the app keeps working and just hides these.
-  const features = { comments: true, completedAt: true, adminPw: true, photos: true };
+  const features = { comments: true, completedAt: true, adminPw: true };
 
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36));
 
@@ -85,7 +85,7 @@ const Store = (() => {
 
   function toRows(d) {
     return {
-      officers: d.officers.map(o => ({ id: o.id, name: o.name, role: o.role || '', is_admin: !!o.isAdmin, ...(features.photos ? { photo_url: o.photo || null } : {}) })),
+      officers: d.officers.map(o => ({ id: o.id, name: o.name, role: o.role || '', is_admin: !!o.isAdmin })),
       meetings: d.meetings.map(m => ({
         id: m.id, title: m.title, date: m.date, time: m.time || '', location: m.location || '', agenda: m.agenda || '',
         minutes_text: m.minutes?.text || '', minutes_link: m.minutes?.link || '', minutes_files: m.minutes?.files || [],
@@ -125,7 +125,7 @@ const Store = (() => {
       if (r.present) m.attendance[r.officer_id] = true;
     });
     return {
-      officers: rows.officers.map(r => ({ id: r.id, name: r.name, role: r.role || '', isAdmin: !!r.is_admin, photo: r.photo_url || null })),
+      officers: rows.officers.map(r => ({ id: r.id, name: r.name, role: r.role || '', isAdmin: !!r.is_admin })),
       tasks: rows.tasks.map(r => ({
         id: r.id, title: r.title, notes: r.notes || '', ownerId: r.owner_id, collaboratorIds: r.collaborator_ids || [],
         dueDate: r.due_date || '', status: r.status, createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at,
@@ -149,16 +149,14 @@ const Store = (() => {
   };
 
   async function detectFeatures() {
-    const [c, t, p, ph] = await Promise.all([
+    const [c, t, p] = await Promise.all([
       client.from('task_comments').select('id').limit(1),
       client.from('tasks').select('completed_at').limit(1),
       client.rpc('admin_has_password', { oid: '__probe__' }),
-      client.from('officers').select('photo_url').limit(1),
     ]);
     features.comments = !c.error;
     features.completedAt = !t.error;
     features.adminPw = !p.error;
-    features.photos = !ph.error;
     if (c.error || t.error) console.warn('Database is on the older schema — re-run supabase/schema.sql to enable task updates and on-time stats.');
   }
 
@@ -355,22 +353,6 @@ const Store = (() => {
     const { data: pub } = bucket.getPublicUrl(path);
     return { name: file.name, type: file.type, size: file.size, path, url: pub.publicUrl, uploadedAt: new Date().toISOString() };
   }
-  // Profile photos: a small square JPEG (already cropped by the app). Supabase → "avatars" bucket;
-  // local mode → stored inline as a data URL.
-  async function uploadPhoto(officerId, blob) {
-    if (!remote) return new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
-    const path = `${officerId}/${uid().slice(0, 8)}.jpg`;
-    const bucket = client.storage.from('avatars');
-    const { error } = await bucket.upload(path, blob, { contentType: 'image/jpeg', cacheControl: '31536000' });
-    if (error) throw error;
-    return bucket.getPublicUrl(path).data.publicUrl;
-  }
-  async function removePhoto(url) {
-    const marker = '/object/public/avatars/';
-    if (!remote || !url || !url.includes(marker)) return;
-    await client.storage.from('avatars').remove([decodeURIComponent(url.split(marker)[1])]);
-  }
-
   async function removeFile(path) {
     if (!remote || !path) return;
     const { error } = await client.storage.from('minutes').remove([path]);
@@ -378,7 +360,7 @@ const Store = (() => {
   }
 
   return {
-    load, save, replaceAll, reset, clearAll, uid, uploadFile, removeFile, uploadPhoto, removePhoto, setMe, adminPw,
+    load, save, replaceAll, reset, clearAll, uid, uploadFile, removeFile, setMe, adminPw,
     remote, configured, features,
     onRemoteChange: fn => listeners.change.push(fn),
     onError: fn => listeners.error.push(fn),

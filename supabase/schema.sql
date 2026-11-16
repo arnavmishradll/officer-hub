@@ -145,19 +145,5 @@ create policy "minutes read"   on storage.objects for select to anon, authentica
 create policy "minutes upload" on storage.objects for insert to anon, authenticated with check (bucket_id = 'minutes');
 create policy "minutes delete" on storage.objects for delete to anon, authenticated using (bucket_id = 'minutes');
 
--- v4: profile photos (small square JPEGs in a public "avatars" bucket; officers store the URL).
-alter table officers add column if not exists photo_url text;
-
-insert into storage.buckets (id, name, public)
-values ('avatars', 'avatars', true)
-on conflict (id) do nothing;
-
-drop policy if exists "avatars read"   on storage.objects;
-drop policy if exists "avatars upload" on storage.objects;
-drop policy if exists "avatars delete" on storage.objects;
-create policy "avatars read"   on storage.objects for select to anon, authenticated using (bucket_id = 'avatars');
-create policy "avatars upload" on storage.objects for insert to anon, authenticated with check (bucket_id = 'avatars');
-create policy "avatars delete" on storage.objects for delete to anon, authenticated using (bucket_id = 'avatars');
-
 -- Make the API pick up new columns/tables right away.
 notify pgrst, 'reload schema';
