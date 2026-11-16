@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Officer Hub</title>
+  <meta name="description" content="Tasks, meetings, and minutes for the exec board." />
+  <!-- Add to Home Screen: opens full screen like an app -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" href="icons/favicon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Officer Hub" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#eef1f6" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)" />
+  <link rel="stylesheet" href="styles.css" />
+  <script>
+    // Apply the saved theme before first paint (no flash). Preference: system | light | dark.
+    (function () {
+      var pref = 'system';
+      try { pref = localStorage.getItem('officerhub.theme') || 'system'; } catch (e) {}
+      var dark = pref === 'dark' || (pref === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    })();
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◆</span>
+      <span>Officer Hub</span>
+    </div>
+    <nav class="tabs" id="tabs">
+      <a href="#my" data-view="my">My Tasks</a>
+      <a href="#master" data-view="master" class="admin-only">Master List</a>
+      <a href="#people" data-view="people">People</a>
+      <a href="#meetings" data-view="meetings">Meetings</a>
+      <a href="#minutes" data-view="minutes">Minutes</a>
+    </nav>
+    <button class="icon-btn" id="themeBtn" type="button" aria-label="Appearance"></button>
+    <div class="whoami">
+      <label for="userSelect">Signed in as</label>
+      <select id="userSelect"></select>
+    </div>
+  </header>
+
+  <main id="view"></main>
+
+  <button class="fab" id="fab" type="button" aria-label="New task">+</button>
+  <div id="modalRoot"></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js"></script>
+  <script src="config.js"></script>
+  <script src="store.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
